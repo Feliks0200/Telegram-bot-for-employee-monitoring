@@ -24,6 +24,8 @@ dp = Dispatcher()
 bot = Bot(token=TOKEN)
 scheduler = AsyncIOScheduler(timezone="Europe/Moscow")
 
+admin_command = {"/setrole : меняет роли работникам","/task : задача для определенного сотрудника","/broadcast : рассылка задач по всем сотрудникам"}
+
 def load_shifts() -> dict:
     if os.path.exists(WORK_FILE):
         try:
@@ -37,18 +39,18 @@ def save_shifts(shifts_data: dict):
     with open(WORK_FILE, "w", encoding="utf-8") as f:
         json.dump(shifts_data, f, ensure_ascii=False, indent=4)
 
-def load_users() -> set:
+def load_users() -> dict:
     if os.path.exists(USERS_FILE):
         try:
             with open(USERS_FILE, "r", encoding="utf-8") as f:
-                return set(json.load(f))
+                return json.load(f)
         except Exception:
-            return set()
-    return set()
+            return {}
+    return {}
 
-def save_users(users_set: set):
+def save_users(users_dict: dict):
     with open(USERS_FILE, "w", encoding="utf-8") as f:
-                json.dump(list(users_set), f)
+        json.dump(users_dict, f, ensure_ascii=False, indent=4)
 
 active_users = load_users()
 
@@ -57,7 +59,12 @@ active_users = load_users()
 async def cmd_start(message: Message):
     user_id = message.from_user.id
     if user_id not in active_users:
-        active_users.add(user_id)
+        username = f"@{message.from_user.username}" if message.from_user.username else "Без ника"
+        active_users[user_id] = {
+            "username": username,
+            "name": message.from_user.full_name,
+            "role": "работник"
+        }
         save_users(active_users)
 
     await message.answer(
@@ -143,10 +150,10 @@ async def cmd_broadcast(message: Message,state: FSMContext):
     if len(args) > 1:
         text_to_send = args[1]
     else:
-        await message.answer("вы забыли указать задачу, она указываеться так ( /broadcast 'задача' )")
+        await message.answer("формат: /broadcast [текст] \nНапример: /broadcast в пятницу совещания на улице абобной в 17:00")
         return
     success_count = 0
-    for user_id in active_users:
+    for user_id in active_users.keys():
         try:
             await bot.send_message(user_id, f"Задача : {text_to_send}")
             success_count += 1
@@ -166,7 +173,7 @@ async def send_shift_request_to_user(user_id: int):
         print(e)
 
 async def scheduled_shift_broadcast():
-    for user_id in active_users:
+    for user_id in active_users.keys():
         await send_shift_request_to_user(user_id)
 
 @dp.message(Command("my_shifts"))
@@ -180,6 +187,67 @@ async def cmd_my_shifts(message: Message):
     text = "<b>Твои последнии смены:</b>\n \n"
     for shift_time in user_shifts:
         text += f"<b>{shift_time}</b>\n"
+
+    await message.answer(text)
+
+@dp.message(Command("setrole"))
+async def cmd_setrole(message: Message):
+    if str(message.from_user.id) != admin:
+        await message.answer("извините но менять роль может только админ")
+        return
+
+    for user_id, user_data in active_users.items():
+        await message.answer(f"<b>user_id : {user_id}</b> \n <b>username : {user_data.get('name','без юзернейма')}</b> \n <b>name : {user_data.get("username", "Без ника")}</b> \n <b>role : {user_data.get("role", "работник")}</b>")
+        await asyncio.sleep(0.1)
+
+    args = message.text.split(maxsplit=2)
+    if len(args) <3:
+        await message.answer("Формат: /setrole [ID] [роль]\nНапример: /setrole 12345 3д дизайнер")
+        return
+
+    target_id, new_role = args[1], args[2]
+    if target_id in active_users:
+        active_users[target_id]["role"] = new_role
+        save_users(active_users)
+        await message.answer(f"✅ Роль '{new_role}' назначена.")
+    else:
+        await message.answer("Пользователь с таким ID не найден.")
+
+@dp.message(Command("task"))
+async def cmd_task(message: Message):
+    if str(message.from_user.id) != admin:
+        await  message.answer("Извините вы не можете назначать задания")
+        return
+
+    for user_id, user_data in active_users.items():
+        await message.answer(f"<b>user_id : {user_id}</b> \n <b>username : {user_data.get('name','без юзернейма')}</b> \n <b>name : {user_data.get("username", "Без ника")}</b> \n <b>role : {user_data.get("role", "работник")}</b>")
+        await asyncio.sleep(0.1)
+
+    args = message.text.split(maxsplit=2)
+    if len(args) <3:
+        await message.answer("формат: /task [роль_или_юзернейм] [текст]\nНапример: /task монтажер Сделай нарезку")
+        return
+
+    target,text_to_send = args[1].lower(), args[2]
+    suces = 0
+
+    for uid,data in active_users.items():
+        if target in data.get("role","").lower() or target == data.get("username","").lower():
+            try:
+                await bot.send_message(uid, f"Персональная задача:\n{text_to_send}")
+                suces += 1
+            except Exception as e:
+                print(e)
+    await message.answer(f"отправленно : {suces}. сотрудникам")
+
+@dp.message(Command("admin"))
+async def cmd_admin(message: Message):
+    if str(message.from_user.id) != admin:
+        await message.answer("извините вы не админ")
+        return
+    text="Админ комманды: \n \n"
+    for aboba in admin_command:
+        text+=f"<b>{aboba}</b> \n"
 
     await message.answer(text)
 
