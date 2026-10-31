@@ -4,6 +4,8 @@ import logging
 import os
 import sys
 
+import datetime
+
 from aiogram import Bot, Dispatcher, F
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
@@ -13,13 +15,27 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, CallbackQuery, Message, message
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
-admin = "id"
+admin = "админ айди"
 USERS_FILE = "Users.json"
-TOKEN = "token"
+WORK_FILE = "Work.json"
+TOKEN = "токен бота"
 
 dp = Dispatcher()
 bot = Bot(token=TOKEN)
 scheduler = AsyncIOScheduler(timezone="Europe/Moscow")
+
+def load_shifts() -> dict:
+    if os.path.exists(WORK_FILE):
+        try:
+            with open(WORK_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return {}
+    return {}
+
+def save_shifts(shifts_data: dict):
+    with open(WORK_FILE, "w", encoding="utf-8") as f:
+        json.dump(shifts_data, f, ensure_ascii=False, indent=4)
 
 def load_users() -> set:
     if os.path.exists(USERS_FILE):
@@ -92,26 +108,43 @@ async def shift_callback(calback: CallbackQuery):
             id=f"later_{user.id}",
             max_instances=1,
             misfire_grace_time=60,
+            replace_existing=True,
         )
         await calback.message.edit_text("Хорошо переспрошу через 30 мин.")
-        await calback.message.edit_text("Напоминание отложенно!")
+        await calback.message.answer("Напоминание отложенно!")
         return
+    elif action == "yes":
+        user_id = str(calback.from_user.id)
+        current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+        shifts_data = load_shifts()
+        if user_id not in shifts_data:
+            shifts_data[user_id] = []
+        shifts_data[user_id].append(current_time)
+        shifts_data[user_id] = shifts_data[user_id][-10:]
+        save_shifts(shifts_data)
     username_str = f"@{user.username}" if user.username else f"ID:{user.id}"
     await bot.send_message(
         admin,
         f"Отчет по смене : \n"
         f"От : {user.full_name} ({username_str}) \n"
-        f"Ответ **{answer_text}**",
+        f"Ответ <b>{answer_text}</b>",
     )
     await calback.answer("Ответ записан")
-    await calback.message.edit_text(f"Твой ответ принят: **{answer_text}**")
+    await calback.message.edit_text(f"Твой ответ принят: <b>{answer_text}</b>")
 
 @dp.message(Command("broadcast"))
 async def cmd_broadcast(message: Message,state: FSMContext):
+    if str(message.from_user.id) != admin:
+        await message.answer("Извините. Вы не являетесь админом")
+        return
     await state.clear()
 
     args = message.text.split(maxsplit=1)
-    text_to_send = args[1] if len(args) > 1 else "Пустая задача"
+    if len(args) > 1:
+        text_to_send = args[1]
+    else:
+        await message.answer("вы забыли указать задачу, она указываеться так ( /broadcast 'задача' )")
+        return
     success_count = 0
     for user_id in active_users:
         try:
@@ -122,7 +155,7 @@ async def cmd_broadcast(message: Message,state: FSMContext):
             print(e)
     await message.answer(f"Рассылка завершена. Отправлено {success_count} работникам.")
 
-async def send_shift_request_to_user(user_id: id):
+async def send_shift_request_to_user(user_id: int):
     try:
         await bot.send_message(
             user_id,
@@ -135,6 +168,20 @@ async def send_shift_request_to_user(user_id: id):
 async def scheduled_shift_broadcast():
     for user_id in active_users:
         await send_shift_request_to_user(user_id)
+
+@dp.message(Command("my_shifts"))
+async def cmd_my_shifts(message: Message):
+    user_id = str(message.from_user.id)
+    shifts_data = load_shifts()
+    if user_id not in shifts_data or not shifts_data[user_id]:
+        await message.answer("У вас нету записей о сменах")
+        return
+    user_shifts = shifts_data[user_id][-10:]
+    text = "<b>Твои последнии смены:</b>\n \n"
+    for shift_time in user_shifts:
+        text += f"<b>{shift_time}</b>\n"
+
+    await message.answer(text)
 
 
 async def main() -> None:
