@@ -8,7 +8,7 @@ import sys
 import datetime
 import time
 
-from aiogram import Bot, Dispatcher, F
+from aiogram import Bot, Dispatcher, F, BaseMiddleware
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.filters import Command
@@ -16,12 +16,13 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
-from KeyBoards import get_shift_keyboard, get_task_keyboard
+from KeyBoards import get_shift_keyboard, get_task_keyboard, admin_keyboard
 
-admin = ["админы через запятую"]
+admin = ["айди админов через запятую"]
 USERS_FILE = "Users.json"
 WORK_FILE = "Work.json"
 TASKS_FILE = "Task.json"
+BLOCK_FILE = "Blocked.json"
 TOKEN = "токен бота"
 
 dp = Dispatcher()
@@ -30,6 +31,19 @@ scheduler = AsyncIOScheduler(timezone="Europe/Moscow")
 
 admin_command = {"/setrole : меняет роли работникам","/task : задача для определенного сотрудника","/broadcast : рассылка задач по всем сотрудникам"}
 
+
+def load_block() -> set:
+    if os.path.exists(BLOCK_FILE):
+        try:
+            with open(BLOCK_FILE, "r", encoding="utf-8") as f:
+                return set(json.load(f))
+        except Exception:
+            return set()
+    return set()
+
+def save_block(block_set: set):
+    with open(BLOCK_FILE, "w", encoding="utf-8") as f:
+        json.dump(list(block_set), f, ensure_ascii=False, indent=4)
 
 def load_tasks() -> dict:
     if os.path.exists(TASKS_FILE):
@@ -72,34 +86,93 @@ def save_users(users_dict: dict):
 
 active_users = load_users()
 
+pending_users = {}
+blocked_users = load_block()
+
+
+class AuthMiddleware(BaseMiddleware):
+    async def __call__(self, handler, event, data):
+        if not isinstance(event, Message):
+            return await handler(event, data)
+        user_id = str(event.from_user.id)
+        if user_id in admin or user_id in active_users:
+            return await handler(event, data)
+        if event.text and event.text.startswith('/start') and user_id not in blocked_users:
+            return await handler(event, data)
+        return
 
 @dp.message(Command("start"))
 async def cmd_start(message: Message):
     user_id = message.from_user.id
-    if user_id not in active_users:
-        username = f"@{message.from_user.username}" if message.from_user.username else "Без ника"
-        active_users[user_id] = {
-            "username": username,
-            "name": message.from_user.full_name,
-            "role": "работник"
-        }
-        save_users(active_users)
 
+    if user_id in active_users or user_id in admin:
+        await message.answer("С возвращением! Я бот для учета смен и задач.")
+        return
+
+    if user_id in pending_users:
+        await message.answer("Твоя заявка уже отправлена администраторам. Пожалуйста, не спамь и дождись решения.")
+        return
+
+    if user_id in blocked_users:
+        await message.answer("Вы заблокированны")
+        return
+
+    username = f"@{message.from_user.username}" if message.from_user.username else "Без ника"
+    name = message.from_user.full_name
+    pending_users[user_id] = {"name": name, "username": username}
+
+
+
+    await message.answer("Твоя заявка отправлена администраторам! Ожидай подтверждения.")
+    await asyncio.sleep(1)
     await message.answer(
         "Привет! Я бот для учета смен.\n"
-        "Я буду присылать тебе опросники по графику."
+        "Я буду присылать тебе опросники по графику. (если тебя примет администрация)"
     )
 
-@dp.message(Command('test'))
-async def cmd_test(message: Message):
-    user_id = message.from_user.id
-    # Вызываем отправку напрямую
-    try:
-        await send_shift_request_to_user(user_id)
-        await message.answer("🧪 Тестовый опросник отправлен!")
-    except Exception as e:
-        await message.answer(f"Ошибка при отправке: {e}")
-        print(f"Ошибка в /test: {e}")
+    for amd in admin:
+        try:
+            await bot.send_message(amd,f"Новая заявка на добавление!\n\nИмя: {name}\nЮзернейм: {username}\nID: {user_id}",reply_markup=admin_keyboard(user_id))
+        except Exception as e:
+            print(e)
+
+@dp.callback_query(F.data.startswith("auth_"))
+async def auth_callback(callback: CallbackQuery):
+    if str(callback.from_user.id) not in admin:
+        await callback.answer("У вас нет прав!", show_alert=True)
+        return
+    parts = callback.data.split("_")
+    action = parts[1]
+    target_id = parts[2]
+
+    user_info = pending_users.get(target_id, {"name": "Неизвестно", "username": "Без ника"})
+    if action =="yes":
+        if target_id in active_users:
+            await callback.answer("Пользователь уже был добавлен",show_alert=True)
+            return
+
+        active_users[target_id] = {
+            "username": user_info["username"],
+            "name": user_info["name"],
+            "role":"работник"
+        }
+        save_users(active_users)
+        await callback.message.edit_text(f"Пользователь {user_info['name']} ({user_info['username']}) принят и добавлен в базу!")
+        try:
+            await bot.send_message(target_id, "🎉Ваша заявка одобрена! Теперь вам доступен функционал бота.")
+        except Exception:
+            pass
+    if action == "no":
+        blocked_users.add(target_id)
+        save_block(blocked_users)
+        try:
+            await bot.send_message(target_id, "Вы заблокированы!")
+        except Exception as e:
+            print(e)
+        await callback.message.edit_text(f"Заявка от {user_info['name']} отклонена. Пользователь заблокирован.")
+
+    if target_id in pending_users:
+        del pending_users[target_id]
 
 @dp.callback_query(F.data.startswith("shift_"))
 async def shift_callback(calback: CallbackQuery):
@@ -335,6 +408,8 @@ async def main() -> None:
     scheduler.add_job(scheduled_shift_broadcast, 'cron', hour=20, minute=0)
 
     scheduler.add_job(check_deadlines, 'cron', hour=10, minute=0)
+
+    dp.message.middleware(AuthMiddleware())
 
     scheduler.start()
     bot = Bot(token=TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))

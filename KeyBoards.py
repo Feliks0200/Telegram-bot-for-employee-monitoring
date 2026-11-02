@@ -16,3 +16,11 @@ def get_task_keyboard(task_id: str):
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="Задача выполнена", callback_data=f"taskdone_{task_id}")]
     ])
+
+def admin_keyboard(user_id : int):
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="Принять", callback_data=f"auth_yes_{user_id}"),
+            InlineKeyboardButton(text="Заблокировать", callback_data=f"auth_no_{user_id}")
+        ]
+    ])
