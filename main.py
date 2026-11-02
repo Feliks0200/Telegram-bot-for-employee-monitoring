@@ -18,7 +18,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from KeyBoards import get_shift_keyboard, get_task_keyboard, admin_keyboard
 
-admin = ["айди админов через запятую"]
+admin = ["админ айди через запятую"]
 USERS_FILE = "Users.json"
 WORK_FILE = "Work.json"
 TASKS_FILE = "Task.json"
@@ -29,7 +29,7 @@ dp = Dispatcher()
 bot = Bot(token=TOKEN)
 scheduler = AsyncIOScheduler(timezone="Europe/Moscow")
 
-admin_command = {"/setrole : меняет роли работникам","/task : задача для определенного сотрудника","/broadcast : рассылка задач по всем сотрудникам"}
+admin_command = {"/setrole : меняет роли работникам","/task : задача для определенного сотрудника","/broadcast : рассылка задач по всем сотрудникам","not_task_broadcast : Рассылка обьявления без задачи"}
 
 
 def load_block() -> set:
@@ -252,11 +252,34 @@ async def send_shift_request_to_user(user_id: int):
     except Exception as e:
         print(e)
 
+@dp.message(Command("not_task_broadcast"))
+async def cmd_broadcast(message: Message,state: FSMContext):
+    if str(message.from_user.id) not in admin:
+        await message.answer("Извините. Вы не являетесь админом")
+        return
+    await state.clear()
+
+    args = message.text.split(maxsplit=1)
+    if len(args) > 1:
+        text_to_send = args[1]
+    else:
+        await message.answer("формат: /not_task_broadcast [текст] \nНапример: /not_task_broadcast в пятницу совещания на улице абобной в 17:00")
+        return
+    success_count = 0
+    for user_id in active_users.keys():
+        try:
+            await bot.send_message(user_id, f"Обьявление : {text_to_send}")
+            success_count += 1
+            await asyncio.sleep(0.1)
+        except Exception as e:
+            print(e)
+    await message.answer(f"Рассылка завершена. Отправлено {success_count} работникам.")
+
 async def scheduled_shift_broadcast():
     for user_id in active_users.keys():
         await send_shift_request_to_user(user_id)
 
-@dp.message(Command("my_shifts"))
+@dp.message(Command("my_last_shifts"))
 async def cmd_my_shifts(message: Message):
     user_id = str(message.from_user.id)
     shifts_data = load_shifts()
@@ -267,6 +290,23 @@ async def cmd_my_shifts(message: Message):
     text = "<b>Твои последнии смены:</b>\n \n"
     for shift_time in user_shifts:
         text += f"<b>{shift_time}</b>\n"
+
+    await message.answer(text)
+
+@dp.message(Command("my_all_shifts"))
+async def cmd_my_all_shifts(message: Message):
+    user_id = str(message.from_user.id)
+    shifts_data = load_shifts()
+    if user_id not in shifts_data or not shifts_data[user_id]:
+        await message.answer("У вас нету записей о сменах")
+        return
+    user_shifts = shifts_data[user_id]
+    text = "<b>Твои последнии смены:</b>\n \n"
+    for shift_time in user_shifts:
+        text += f"<b>{shift_time}</b>\n"
+
+    if len(text) > 4000:
+        text = text[:4000] + "\n... (показана только часть записей)"
 
     await message.answer(text)
 
