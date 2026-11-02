@@ -2,22 +2,26 @@ import asyncio
 import json
 import logging
 import os
+import random
 import sys
 
 import datetime
+import time
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
-from aiogram.filters import Command, CommandStart
+from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
-from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, CallbackQuery, Message, message
+from aiogram.types import CallbackQuery, Message
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
-admin = "админ айди"
+from KeyBoards import get_shift_keyboard, get_task_keyboard
+
+admin = ["админы через запятую"]
 USERS_FILE = "Users.json"
 WORK_FILE = "Work.json"
+TASKS_FILE = "Task.json"
 TOKEN = "токен бота"
 
 dp = Dispatcher()
@@ -25,6 +29,20 @@ bot = Bot(token=TOKEN)
 scheduler = AsyncIOScheduler(timezone="Europe/Moscow")
 
 admin_command = {"/setrole : меняет роли работникам","/task : задача для определенного сотрудника","/broadcast : рассылка задач по всем сотрудникам"}
+
+
+def load_tasks() -> dict:
+    if os.path.exists(TASKS_FILE):
+        try:
+            with open(TASKS_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return {}
+    return {}
+
+def save_tasks(tasks_dict: dict):
+    with open(TASKS_FILE, "w", encoding="utf-8") as f:
+        json.dump(tasks_dict, f, ensure_ascii=False, indent=4)
 
 def load_shifts() -> dict:
     if os.path.exists(WORK_FILE):
@@ -83,17 +101,6 @@ async def cmd_test(message: Message):
         await message.answer(f"Ошибка при отправке: {e}")
         print(f"Ошибка в /test: {e}")
 
-def get_shift_keyboard():
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(text="Да", callback_data="shift_yes"),
-            InlineKeyboardButton(text="Нет", callback_data="shift_no"),
-        ],
-        [
-            InlineKeyboardButton(text="Спросить через 30 мин",callback_data="shift_later"),
-        ]
-    ])
-
 @dp.callback_query(F.data.startswith("shift_"))
 async def shift_callback(calback: CallbackQuery):
     action = calback.data.split("_")[1]
@@ -127,7 +134,7 @@ async def shift_callback(calback: CallbackQuery):
         if user_id not in shifts_data:
             shifts_data[user_id] = []
         shifts_data[user_id].append(current_time)
-        shifts_data[user_id] = shifts_data[user_id][-10:]
+        # shifts_data[user_id] = shifts_data[user_id][-10:] ограничить до 10 строк
         save_shifts(shifts_data)
     username_str = f"@{user.username}" if user.username else f"ID:{user.id}"
     await bot.send_message(
@@ -141,7 +148,7 @@ async def shift_callback(calback: CallbackQuery):
 
 @dp.message(Command("broadcast"))
 async def cmd_broadcast(message: Message,state: FSMContext):
-    if str(message.from_user.id) != admin:
+    if str(message.from_user.id) not in admin:
         await message.answer("Извините. Вы не являетесь админом")
         return
     await state.clear()
@@ -192,12 +199,12 @@ async def cmd_my_shifts(message: Message):
 
 @dp.message(Command("setrole"))
 async def cmd_setrole(message: Message):
-    if str(message.from_user.id) != admin:
+    if str(message.from_user.id) not in admin:
         await message.answer("извините но менять роль может только админ")
         return
 
     for user_id, user_data in active_users.items():
-        await message.answer(f"<b>user_id : {user_id}</b> \n <b>username : {user_data.get('name','без юзернейма')}</b> \n <b>name : {user_data.get("username", "Без ника")}</b> \n <b>role : {user_data.get("role", "работник")}</b>")
+        await message.answer(f"<b>user_id : {user_id}</b> \n <b>name : {user_data.get('name','без имени')}</b> \n <b>username : {user_data.get("username", "Без username")}</b> \n <b>role : {user_data.get("role", "работник")}</b>")
         await asyncio.sleep(0.1)
 
     args = message.text.split(maxsplit=2)
@@ -215,34 +222,50 @@ async def cmd_setrole(message: Message):
 
 @dp.message(Command("task"))
 async def cmd_task(message: Message):
-    if str(message.from_user.id) != admin:
+    if str(message.from_user.id) not in admin:
         await  message.answer("Извините вы не можете назначать задания")
         return
 
     for user_id, user_data in active_users.items():
-        await message.answer(f"<b>user_id : {user_id}</b> \n <b>username : {user_data.get('name','без юзернейма')}</b> \n <b>name : {user_data.get("username", "Без ника")}</b> \n <b>role : {user_data.get("role", "работник")}</b>")
+        await message.answer(f"user_id : {user_id} \n name : {user_data.get('name','без имени')} \n username : {user_data.get("username", "без юзернейма")} \n role : {user_data.get("role", "работник")}")
         await asyncio.sleep(0.1)
 
-    args = message.text.split(maxsplit=2)
-    if len(args) <3:
-        await message.answer("формат: /task [роль_или_юзернейм] [текст]\nНапример: /task монтажер Сделай нарезку")
+    args = message.text.split(maxsplit=3)
+    if len(args) < 4:
+        await message.answer(
+            "Формат: /task [роль или юзернейм] [ДД.ММ.ГГГГ] [текст]\nНапример: /task монтажер 15.11.2026 Сделай нарезку"
+        )
         return
 
-    target,text_to_send = args[1].lower(), args[2]
+    target, deadline_str, text_to_send = args[1].lower(), args[2], args[3]
+    tasks_data = load_tasks()
     suces = 0
 
     for uid,data in active_users.items():
         if target in data.get("role","").lower() or target == data.get("username","").lower():
+            task_id = str(int(time.time() * 1000)) + str(uid)[-3:] + str(random.randint(1,1000000))
+            tasks_data[task_id] = {
+                "user_id": uid,
+                "text": text_to_send,
+                "deadline": deadline_str,
+                "status": "pending"
+            }
+            save_tasks(tasks_data)
             try:
-                await bot.send_message(uid, f"Персональная задача:\n{text_to_send}")
+                await bot.send_message(uid,f"Новая задача!\n\nЗадание: {text_to_send}\nДедлайн: {deadline_str}\n\nпосле выполнение нажмите кнопку ниже.",reply_markup=get_task_keyboard(task_id))
                 suces += 1
             except Exception as e:
                 print(e)
+    if suces == 0:
+        await message.answer("не найдены сотрудники с такой ролью либо юзернейму")
+        return
     await message.answer(f"отправленно : {suces}. сотрудникам")
+
+
 
 @dp.message(Command("admin"))
 async def cmd_admin(message: Message):
-    if str(message.from_user.id) != admin:
+    if str(message.from_user.id) not in admin:
         await message.answer("извините вы не админ")
         return
     text="Админ комманды: \n \n"
@@ -251,10 +274,68 @@ async def cmd_admin(message: Message):
 
     await message.answer(text)
 
+@dp.callback_query(F.data.startswith("taskdone_"))
+async def task_done_callback(callback: CallbackQuery):
+    task_id = callback.data.split("_")[1]
+    tasks_data = load_tasks()
+
+
+    if task_id not in tasks_data:
+        await callback.answer("Эта задача уже недействительна или удалена.", show_alert=True)
+        return
+    task_info = tasks_data[task_id]
+    if task_info["status"] == "completed":
+        await callback.answer("Задача уже отмечена как выполненная!", show_alert=True)
+        return
+
+    task_info["status"] = "completed"
+    save_tasks(tasks_data)
+
+    user_id = str(callback.from_user.id)
+    user_data = active_users.get(user_id,{})
+    name = user_data.get("name",callback.from_user.full_name)
+
+    await callback.message.edit_text(f"Задача выполнена \n{task_info['text']}\nдедлайн был до {task_info['deadline']}")
+    await callback.answer("Отличная работа админы уведомленны")
+
+    for adm in admin:
+        try:
+            await bot.send_message(adm,f"Задача выполнена сотрудником ( {name} ) \nзадача : ( {task_info['text']} ) \n\nдедлайн был до ( {task_info['deadline']} )")
+        except Exception as e:
+            print(e)
+
+async def check_deadlines():
+    tasks_data = load_tasks()
+    today = datetime.datetime.now().date()
+    changed = False
+
+    for task_id,task_info in list(tasks_data.items()):
+        if task_info['status'] == "completed":
+            continue
+
+        deadline_date = datetime.datetime.strptime(task_info['deadline'],"%Y-%m-%d").date()
+        days_left = (deadline_date - today).days
+        user_id = task_info["user_id"]
+
+        try:
+            if days_left > 0:
+                await bot.send_message(user_id,f"<b>Напоминание о задаче!</b>\nДо дедлайна осталось <b>{days_left} дней</b>.\n\nЗадание: {task_info['text']}\nНе забудь нажать кнопку 'Выполнено' в оригинальном сообщении, когда закончишь!")
+            elif days_left == 0:
+                await bot.send_message(user_id,f"<b>ДЕДЛАЙН СЕГОДНЯ!</b>\n\nЗадание: {task_info['text']}\nПосле завершения задачи не забудь отчитаться о готовности")
+            else:
+                await bot.send_message(user_id,f"<b>ДЕЛАЙН ПРОСРОЧЕН на {abs(days_left)} дней!</b>\n\nЗадание: {task_info['text']}")
+        except Exception as e:
+            print(e)
+
+
+
 
 async def main() -> None:
     scheduler.add_job(scheduled_shift_broadcast, 'cron', hour=9, minute=0)
     scheduler.add_job(scheduled_shift_broadcast, 'cron', hour=20, minute=0)
+
+    scheduler.add_job(check_deadlines, 'cron', hour=10, minute=0)
+
     scheduler.start()
     bot = Bot(token=TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
     await dp.start_polling(bot)
