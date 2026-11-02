@@ -29,7 +29,7 @@ dp = Dispatcher()
 bot = Bot(token=TOKEN)
 scheduler = AsyncIOScheduler(timezone="Europe/Moscow")
 
-admin_command = {"/setrole : меняет роли работникам","/task : задача для определенного сотрудника","/broadcast : рассылка задач по всем сотрудникам","not_task_broadcast : Рассылка обьявления без задачи"}
+admin_command = {"/setrole : меняет роли работникам","/task : задача для определенного сотрудника","/broadcast : рассылка задач по всем сотрудникам","not_task_broadcast : Рассылка пользователям обьявления без задачи"}
 
 
 def load_block() -> set:
