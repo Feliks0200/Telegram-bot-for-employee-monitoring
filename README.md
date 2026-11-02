@@ -1,6 +1,6 @@
 # 👔 Telegram-бот для управления командой
 
-[![GitHub repository](https://github.com/Feliks0200/Telegram-bot-for-employee-monitoring)
+[![GitHub repository](https://img.shields.io/badge/GitHub-Repository-blue?logo=github)](https://github.com/Feliks0200/Telegram-bot-for-employee-monitoring)
 
 Привет! Я написал этого бота, чтобы автоматизировать рутину в команде и избавить руководителя от микроменеджмента. 
 
